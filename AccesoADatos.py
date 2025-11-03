@@ -102,7 +102,7 @@ def iter_image_files(dataset_root: Path) -> Iterable[Path]:
 
 def load_canvas_digit_dataset(
     dataset_root: Path,
-    image_size: Tuple[int, int] = (64, 64),
+    image_size: Tuple[int, int] = (200,200),
 ) -> Tuple[np.ndarray, np.ndarray, Sequence[str], DatasetSummary]:
     """Load every image from the dataset directory.
 
