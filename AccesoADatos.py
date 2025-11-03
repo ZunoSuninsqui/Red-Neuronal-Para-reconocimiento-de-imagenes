@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
-from PIL import Image
+
+from utils.transforms import (
+    PreprocessConfig,
+    compute_dataset_statistics,
+    normalise_images,
+    preprocess_image_path,
+)
 
 # Mapping from the Spanish prefix found in each filename to the numeric label.
 SPANISH_DIGIT_PREFIXES = {
@@ -75,17 +81,16 @@ def _infer_label_from_name(file_name: str) -> int:
     )
 
 
-def _load_image(path: Path, image_size: Tuple[int, int]) -> np.ndarray:
-    """Load a PNG image, convert it to grayscale and resize it."""
+def _load_image(
+    path: Path,
+    image_size: Tuple[int, int],
+    *,
+    preprocess_config: PreprocessConfig | None = None,
+) -> np.ndarray:
+    """Load a PNG image and apply the project-wide preprocessing pipeline."""
 
-    with Image.open(path) as image:
-        return (
-            np.asarray(
-                image.convert("L").resize(image_size, Image.Resampling.LANCZOS),
-                dtype=np.float32,
-            )
-            / 255.0
-        )
+    config = preprocess_config or PreprocessConfig(canvas_size=image_size)
+    return preprocess_image_path(path, config=config)
 
 
 def iter_image_files(dataset_root: Path) -> Iterable[Path]:
@@ -102,7 +107,9 @@ def iter_image_files(dataset_root: Path) -> Iterable[Path]:
 
 def load_canvas_digit_dataset(
     dataset_root: Path,
-    image_size: Tuple[int, int] = (200,200),
+    image_size: Tuple[int, int] = (200, 200),
+    *,
+    preprocess_config: PreprocessConfig | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, Sequence[str], DatasetSummary]:
     """Load every image from the dataset directory.
 
@@ -140,10 +147,12 @@ def load_canvas_digit_dataset(
     labels: List[int] = []
     class_distribution = [0 for _ in DIGIT_CLASS_NAMES]
 
+    config = preprocess_config or PreprocessConfig(canvas_size=image_size)
+
     for image_path in iter_image_files(dataset_root):
         label = _infer_label_from_name(image_path.stem)
-        image = _load_image(image_path, image_size=image_size)
-        images.append(image[..., np.newaxis])
+        image = _load_image(image_path, image_size=image_size, preprocess_config=config)
+        images.append(image)
         labels.append(label)
         class_distribution[label] += 1
 
@@ -162,10 +171,29 @@ def load_canvas_digit_dataset(
     return images_array, labels_array, DIGIT_CLASS_NAMES, summary
 
 
+def load_normalised_dataset(
+    dataset_root: Path,
+    *,
+    image_size: Tuple[int, int] = (200, 200),
+    preprocess_config: PreprocessConfig | None = None,
+) -> Tuple[np.ndarray, np.ndarray, Sequence[str], DatasetSummary, Tuple[float, float]]:
+    """Load the dataset and normalise it using dataset statistics."""
+
+    images, labels, class_names, summary = load_canvas_digit_dataset(
+        dataset_root,
+        image_size=image_size,
+        preprocess_config=preprocess_config,
+    )
+    mean, std = compute_dataset_statistics(images)
+    normalised = normalise_images(images, mean, std)
+    return normalised, labels, class_names, summary, (mean, std)
+
+
 __all__ = [
     "DIGIT_CLASS_NAMES",
     "DatasetSummary",
     "SPANISH_DIGIT_PREFIXES",
     "iter_image_files",
     "load_canvas_digit_dataset",
+    "load_normalised_dataset",
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +23,13 @@ from tkinter import (
 )
 
 from AccesoADatos import DIGIT_CLASS_NAMES
+from utils.calibration import TemperatureScaler, softmax, top_k_predictions
+from utils.transforms import PreprocessConfig, preprocess_pil_image
 
 MODEL_PATH = Path(__file__).resolve().parent / "modelos" / "canvas_digit_cnn.keras"
+CALIBRATION_PATH = Path(__file__).resolve().parent / "modelos" / "calibration_temperature.txt"
+STATS_PATH = Path(__file__).resolve().parent / "modelos" / "dataset_stats.json"
+CLASSES_PATH = Path(__file__).resolve().parent / "classes.json"
 CANVAS_SIZE = 200
 BRUSH_RADIUS = 10
 MODEL_INPUT_SIZE: Tuple[int, int] = (200, 200)
@@ -53,6 +59,9 @@ class CanvasDigitRecognizer:
         root.resizable(False, False)
 
         self.model = model if model is not None else self._load_model(MODEL_PATH)
+        self._classes = self._load_classes()
+        self._stats = self._load_stats()
+        self._scaler = self._load_temperature()
         self._training_summary_text = training_summary
         self._retrain_callback = retrain_callback
         self._retraining_thread: threading.Thread | None = None
@@ -165,6 +174,29 @@ class CanvasDigitRecognizer:
         return keras.models.load_model(model_path)
 
     @staticmethod
+    def _load_classes(self) -> Tuple[str, ...]:
+        if CLASSES_PATH.exists():
+            try:
+                return tuple(json.loads(CLASSES_PATH.read_text()))
+            except Exception:
+                pass
+        return DIGIT_CLASS_NAMES
+
+    def _load_stats(self) -> Tuple[float, float]:
+        if STATS_PATH.exists():
+            payload = json.loads(STATS_PATH.read_text())
+            return float(payload["mean"]), float(payload["std"])
+        return 0.0, 1.0
+
+    def _load_temperature(self) -> TemperatureScaler | None:
+        if CALIBRATION_PATH.exists():
+            try:
+                return TemperatureScaler.load(CALIBRATION_PATH)
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
     def _format_probabilities(predictions: Iterable[Prediction]) -> str:
         return "\n".join(
             f"{prediction.label:>12}: {prediction.probability:6.2%}"
@@ -173,17 +205,21 @@ class CanvasDigitRecognizer:
 
     def predict_digit(self) -> None:
         image = self._prepare_image_for_model()
-        probabilities = self.model.predict(image, verbose=0)[0]
+        logits = self.model.predict(image, verbose=0)
+        if self._scaler is not None:
+            probabilities = self._scaler.predict_proba(logits)[0]
+        else:
+            probabilities = softmax(logits)[0]
+
         best_index = int(np.argmax(probabilities))
         confidence = float(probabilities[best_index])
 
-        self.prediction_var.set(
-            f"Predicción: {best_index} ({confidence:.1%})"
-        )
+        self.prediction_var.set(f"Predicción: {best_index} ({confidence:.1%})")
 
+        top_indices, top_probs = top_k_predictions(probabilities[np.newaxis, ...], k=5)
         predictions = [
-            Prediction(label=name, probability=float(prob))
-            for name, prob in zip(DIGIT_CLASS_NAMES, probabilities)
+            Prediction(label=self._classes[int(idx)], probability=float(prob))
+            for idx, prob in zip(top_indices[0], top_probs[0])
         ]
         self.probabilities_var.set(self._format_probabilities(predictions))
 
@@ -232,13 +268,13 @@ class CanvasDigitRecognizer:
     def _prepare_image_for_model(self) -> np.ndarray:
         """Convierte la imagen dibujada en el formato esperado por la CNN."""
 
-        resized = self._drawing_surface.resize(
-            MODEL_INPUT_SIZE,
-            resample=Image.Resampling.NEAREST,
+        processed = preprocess_pil_image(
+            self._drawing_surface,
+            config=PreprocessConfig(canvas_size=MODEL_INPUT_SIZE),
         )
-        image_array = np.asarray(resized, dtype=np.float32) / 255.0
-        image_array = image_array.reshape((1, MODEL_INPUT_SIZE[1], MODEL_INPUT_SIZE[0], 1))
-        return image_array
+        mean, std = self._stats
+        normalised = (processed - mean) / (std if std != 0 else 1.0)
+        return normalised[np.newaxis, ...]
 
     # ------------------------------------------------------------------
     # Gestión del dibujo sobre el canvas
