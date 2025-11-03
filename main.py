@@ -23,13 +23,13 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from tensorflow import keras
-from tensorflow.keras import layers
 
 from AccesoADatos import (
     DIGIT_CLASS_NAMES,
     DatasetSummary,
     load_canvas_digit_dataset,
 )
+from models import build_canvas_digit_model
 try:
     # La importación es diferida: solo abrimos la interfaz tras entrenar.
     from canvas_app import launch_canvas_app
@@ -53,48 +53,6 @@ class TrainingArtifacts:
     model: keras.Model
     metrics: Dict[str, List[float]]
     summary: DatasetSummary
-
-
-def build_canvas_digit_model(input_shape: Tuple[int, int, int], num_classes: int) -> keras.Model:
-    """Create a simple convolutional neural network for digit recognition."""
-
-    data_augmentation = keras.Sequential(
-        [
-            layers.RandomRotation(0.05),
-            layers.RandomTranslation(0.05, 0.05),
-            layers.RandomZoom(0.1),
-        ],
-        name="data_augmentation",
-    )
-
-    model = keras.Sequential(
-        [
-            keras.Input(shape=input_shape),
-            data_augmentation,
-            layers.Conv2D(32, (3, 3), padding="same", activation="relu"),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D(),
-            layers.Conv2D(64, (3, 3), padding="same", activation="relu"),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D(),
-            layers.Conv2D(128, (3, 3), padding="same", activation="relu"),
-            layers.BatchNormalization(),
-            layers.MaxPooling2D(),
-            layers.Flatten(),
-            layers.Dropout(0.3),
-            layers.Dense(128, activation="relu"),
-            layers.Dropout(0.3),
-            layers.Dense(num_classes, activation="softmax"),
-        ],
-        name="canvas_digit_cnn",
-    )
-
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-    return model
 
 
 def summarise_dataset(summary: DatasetSummary) -> None:
@@ -189,7 +147,23 @@ def train_model() -> TrainingArtifacts:
     class_weight = {int(i): float(weight) for i, weight in enumerate(class_weight_values)}
 
     print("Preparando el modelo...")
-    model = build_canvas_digit_model(images.shape[1:], len(class_names))
+    model = build_canvas_digit_model(
+        images.shape[1:],
+        base_filters=32,
+        dropout=0.3,
+        weight_decay=5e-4,
+        augmentation_params={
+            "rotation": 0.05,
+            "translation": 0.05,
+            "zoom": 0.1,
+            "shear": 0.0,
+        },
+    )
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+        loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        metrics=["accuracy"],
+    )
     model.summary()
 
     callbacks = [

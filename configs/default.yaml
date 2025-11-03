@@ -1,0 +1,35 @@
+seed: 42
+model:
+  input_size: [200, 200, 1]
+  base_filters: 32
+  dropout: 0.3
+  weight_decay: 0.0005
+training:
+  batch_size: 64
+  epochs: 50
+  early_stopping_patience: 6
+  reduce_lr_patience: 3
+  reduce_lr_factor: 0.5
+  min_learning_rate: 0.00001
+  initial_learning_rate: 0.001
+  cosine_decay_steps: 2000
+augmentation:
+  rotation: 0.15
+  translation: 0.1
+  zoom: 0.1
+  shear: 0.05
+calibration:
+  epochs: 250
+  learning_rate: 0.01
+  n_bins: 15
+paths:
+  dataset: Dataset
+  model_dir: modelos
+  metrics: modelos/metricas_entrenamiento.json
+  checkpoint: modelos/canvas_digit_cnn.keras
+  calibration: modelos/calibration_temperature.txt
+  confusion_matrix: modelos/confusion_matrix.png
+  reliability_diagram: modelos/reliability_diagram.png
+  reliability_diagram_calibrated: modelos/reliability_diagram_calibrated.png
+  classes: classes.json
+  dataset_stats: modelos/dataset_stats.json
