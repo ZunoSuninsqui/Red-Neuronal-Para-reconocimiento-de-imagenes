@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Callable, Iterable, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
 from tensorflow import keras
-from tkinter import BOTH, LEFT, RIGHT, Tk, Canvas, Frame, Label, StringVar, ttk
+from tkinter import (
+    BOTH,
+    LEFT,
+    RIGHT,
+    Tk,
+    Canvas,
+    Frame,
+    Label,
+    StringVar,
+    messagebox,
+    ttk,
+)
 
 from AccesoADatos import DIGIT_CLASS_NAMES
 
@@ -28,12 +40,22 @@ class Prediction:
 class CanvasDigitRecognizer:
     """Interfaz principal para dibujar y clasificar dígitos."""
 
-    def __init__(self, root: Tk, *, model: keras.Model | None = None) -> None:
+    def __init__(
+        self,
+        root: Tk,
+        *,
+        model: keras.Model | None = None,
+        training_summary: str | None = None,
+        retrain_callback: Callable[[], Tuple[keras.Model, str]] | None = None,
+    ) -> None:
         self.root = root
         root.title("Reconocimiento de dígitos")
         root.resizable(False, False)
 
         self.model = model if model is not None else self._load_model(MODEL_PATH)
+        self._training_summary_text = training_summary
+        self._retrain_callback = retrain_callback
+        self._retraining_thread: threading.Thread | None = None
         self._init_widgets()
 
     # ------------------------------------------------------------------
@@ -73,8 +95,14 @@ class CanvasDigitRecognizer:
             side=LEFT, padx=(0, 5)
         )
         ttk.Button(button_frame, text="Limpiar", command=self.clear_canvas).pack(
-            side=LEFT
+            side=LEFT, padx=(0, 5)
         )
+        if self._retrain_callback is not None:
+            ttk.Button(
+                button_frame,
+                text="Reentrenar modelo",
+                command=self.retrain_model,
+            ).pack(side=LEFT)
 
         self.prediction_var = StringVar(value="Predicción: —")
         prediction_label = Label(controls, textvariable=self.prediction_var, font=("Arial", 16))
@@ -89,6 +117,17 @@ class CanvasDigitRecognizer:
         )
         probabilities_label.pack(anchor="w")
 
+        self.status_var = StringVar(value="")
+        status_label = Label(
+            controls,
+            textvariable=self.status_var,
+            justify="left",
+            foreground="#555555",
+        )
+        status_label.pack(anchor="w", pady=(5, 0))
+
+        self.progress = ttk.Progressbar(controls, mode="indeterminate")
+
         # Imagen auxiliar donde replicamos lo dibujado en el canvas usando Pillow.
         self._drawing_surface = Image.new("L", (CANVAS_SIZE, CANVAS_SIZE), color=255)
         self._draw = ImageDraw.Draw(self._drawing_surface)
@@ -97,6 +136,22 @@ class CanvasDigitRecognizer:
         self.canvas.bind("<ButtonPress-1>", self._start_drawing)
         self.canvas.bind("<B1-Motion>", self._draw_stroke)
         self.canvas.bind("<ButtonRelease-1>", self._stop_drawing)
+
+        Label(controls, text="Resumen del entrenamiento", font=("Arial", 12, "bold")).pack(
+            anchor="w", pady=(15, 0)
+        )
+        self.training_summary_var = StringVar(
+            value=self._training_summary_text
+            or "No hay información de entrenamiento disponible."
+        )
+        summary_label = Label(
+            controls,
+            textvariable=self.training_summary_var,
+            justify="left",
+            font=("Courier New", 9),
+            wraplength=220,
+        )
+        summary_label.pack(anchor="w", pady=(0, 10))
 
     # ------------------------------------------------------------------
     # Lógica de inferencia
@@ -131,6 +186,48 @@ class CanvasDigitRecognizer:
             for name, prob in zip(DIGIT_CLASS_NAMES, probabilities)
         ]
         self.probabilities_var.set(self._format_probabilities(predictions))
+
+    def retrain_model(self) -> None:
+        if self._retrain_callback is None:
+            return
+        if self._retraining_thread is not None and self._retraining_thread.is_alive():
+            return
+
+        self.status_var.set("Reentrenando modelo, por favor espera...")
+        if not self.progress.winfo_ismapped():
+            self.progress.pack(fill="x", pady=(2, 10))
+        self.progress.start(10)
+
+        self._retraining_thread = threading.Thread(
+            target=self._execute_retraining,
+            daemon=True,
+        )
+        self._retraining_thread.start()
+
+    def _execute_retraining(self) -> None:
+        try:
+            model, summary_text = self._retrain_callback()  # type: ignore[misc]
+        except Exception as exc:  # pragma: no cover - feedback visual
+            self.root.after(0, self._handle_retraining_error, exc)
+        else:
+            self.root.after(0, self._handle_retraining_success, model, summary_text)
+
+    def _handle_retraining_success(self, model: keras.Model, summary_text: str) -> None:
+        self.model = model
+        self.training_summary_var.set(summary_text)
+        self.status_var.set("Reentrenamiento completado correctamente.")
+        self._finish_retraining()
+
+    def _handle_retraining_error(self, exc: Exception) -> None:
+        self.status_var.set("Error durante el reentrenamiento.")
+        messagebox.showerror("Error de entrenamiento", str(exc))
+        self._finish_retraining()
+
+    def _finish_retraining(self) -> None:
+        self.progress.stop()
+        if self.progress.winfo_ismapped():
+            self.progress.pack_forget()
+        self._retraining_thread = None
 
     def _prepare_image_for_model(self) -> np.ndarray:
         """Convierte la imagen dibujada en el formato esperado por la CNN."""
@@ -182,11 +279,21 @@ class CanvasDigitRecognizer:
         self.prediction_var.set("Predicción: —")
 
 
-def launch_canvas_app(model: keras.Model | None = None) -> None:
+def launch_canvas_app(
+    model: keras.Model | None = None,
+    *,
+    training_summary: str | None = None,
+    retrain_callback: Callable[[], Tuple[keras.Model, str]] | None = None,
+) -> None:
     """Inicia la interfaz gráfica, reutilizando un modelo ya entrenado si se proporciona."""
 
     root = Tk()
-    CanvasDigitRecognizer(root, model=model)
+    CanvasDigitRecognizer(
+        root,
+        model=model,
+        training_summary=training_summary,
+        retrain_callback=retrain_callback,
+    )
     root.mainloop()
 
 
